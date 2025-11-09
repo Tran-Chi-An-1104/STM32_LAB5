@@ -22,7 +22,8 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "stdio.h"
+#include "string.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -32,6 +33,13 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+#define MAX_BUFFER_SIZE 30
+#define TIMEOUT_DURATION 3000
+#define CMD_NONE 0
+#define CMD_RST 1
+#define CMD_OK 2
+#define STATE_IDLE 0
+#define STATE_WAIT_OK 1
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -45,7 +53,16 @@ ADC_HandleTypeDef hadc1;
 UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
+uint8_t temp = 0;
+uint8_t buffer[MAX_BUFFER_SIZE];
+uint8_t index_buffer = 0;
+uint8_t buffer_flag = 0;
 
+uint8_t g_command_flag = CMD_NONE;
+uint8_t g_communication_state = STATE_IDLE;
+uint32_t g_timer_start = 0;
+uint32_t g_last_adc_value = 0;
+char tx_buffer[50];
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -59,14 +76,74 @@ static void MX_ADC1_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-uint8_t temp = 0;
-
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart){
 	if(huart->Instance == USART2){
-		HAL_UART_Transmit(&huart2, &temp, 1, 50);
+		if (index_buffer < MAX_BUFFER_SIZE) {
+			buffer[index_buffer++] = temp;
+		}
+		buffer_flag = 1;
 		HAL_UART_Receive_IT(&huart2, &temp, 1);
 		}
-	}
+}
+
+void command_parser_fsm() {
+    if (index_buffer > 0 && buffer[index_buffer - 1] == '#') {
+        if (index_buffer == 5 && strncmp((char*)buffer, "!RST#", 5) == 0) {
+            g_command_flag = CMD_RST;
+        }
+        else if (index_buffer == 4 && strncmp((char*)buffer, "!OK#", 4) == 0) {
+            g_command_flag = CMD_OK;
+        }
+        index_buffer = 0;
+    }
+    if (index_buffer >= MAX_BUFFER_SIZE) {
+        index_buffer = 0;
+    }
+}
+
+void uart_communiation_fsm() {
+    switch (g_communication_state) {
+        // === TRẠNG THÁI CHỜ LỆNH ===
+        case STATE_IDLE:
+            // Nếu FSM 1 báo có lệnh CMD_RST
+            if (g_command_flag == CMD_RST) {
+                // 1. Đọc giá trị ADC
+                g_last_adc_value = HAL_ADC_GetValue(&hadc1); // [cite: 293]
+
+                // 2. Định dạng và gửi gói tin !ADC=xxxx# [cite: 310]
+                sprintf(tx_buffer, "!ADC=%lu#", g_last_adc_value);
+                HAL_UART_Transmit(&huart2, (uint8_t*)tx_buffer, strlen(tx_buffer), 200);
+
+                // 3. Khởi động timer và chuyển trạng thái
+                g_timer_start = HAL_GetTick(); // Bắt đầu đếm 3s [cite: 312]
+                g_communication_state = STATE_WAIT_OK;
+
+                // 4. Xóa cờ lệnh
+                g_command_flag = CMD_NONE;
+            }
+            break;
+
+        // === TRẠNG THÁI CHỜ OK ===
+        case STATE_WAIT_OK:
+            // 1. Kiểm tra xem có lệnh OK không
+            if (g_command_flag == CMD_OK) {
+                g_communication_state = STATE_IDLE; // Quay về chờ [cite: 311]
+                g_command_flag = CMD_NONE;
+            }
+
+            // 2. Kiểm tra TIMEOUT (3 giây) [cite: 312]
+            if (HAL_GetTick() - g_timer_start > TIMEOUT_DURATION) {
+                // Hết 3 giây, gửi lại gói tin CŨ [cite: 313]
+                sprintf(tx_buffer, "!ADC=%lu#", g_last_adc_value); // [cite: 310]
+                HAL_UART_Transmit(&huart2, (uint8_t*)tx_buffer, strlen(tx_buffer), 200);
+
+                // Khởi động lại timer
+                g_timer_start = HAL_GetTick();
+            }
+            break;
+    }
+}
+
 /* USER CODE END 0 */
 
 /**
@@ -100,6 +177,7 @@ int main(void)
   MX_USART2_UART_Init();
   MX_ADC1_Init();
   /* USER CODE BEGIN 2 */
+  HAL_ADC_Start(&hadc1);
   HAL_UART_Receive_IT(&huart2, &temp, 1);
   /* USER CODE END 2 */
 
@@ -107,8 +185,11 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-	  HAL_GPIO_TogglePin(LED_RED_GPIO_Port, LED_RED_Pin);
-	  HAL_Delay(500);
+	uart_communiation_fsm();
+	if (buffer_flag == 1) {
+		command_parser_fsm();
+		buffer_flag = 0;
+	}
 	/* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
