@@ -103,41 +103,33 @@ void command_parser_fsm() {
 
 void uart_communiation_fsm() {
     switch (g_communication_state) {
-        // === TRẠNG THÁI CHỜ LỆNH ===
+        // === Waiting for command state ===
         case STATE_IDLE:
-            // Nếu FSM 1 báo có lệnh CMD_RST
+            // If FSM 1 -> CMD_RST
             if (g_command_flag == CMD_RST) {
-                // 1. Đọc giá trị ADC
-                g_last_adc_value = HAL_ADC_GetValue(&hadc1); // [cite: 293]
-
-                // 2. Định dạng và gửi gói tin !ADC=xxxx# [cite: 310]
+                // 1. Read ADC
+                g_last_adc_value = HAL_ADC_GetValue(&hadc1);
+                // 2. Send !ADC=xxxx#
                 sprintf(tx_buffer, "!ADC=%lu#", g_last_adc_value);
                 HAL_UART_Transmit(&huart2, (uint8_t*)tx_buffer, strlen(tx_buffer), 200);
-
-                // 3. Khởi động timer và chuyển trạng thái
-                g_timer_start = HAL_GetTick(); // Bắt đầu đếm 3s [cite: 312]
+                // 3. Start timer and switch state
+                g_timer_start = HAL_GetTick();
                 g_communication_state = STATE_WAIT_OK;
-
-                // 4. Xóa cờ lệnh
+                // 4. Delete flag
                 g_command_flag = CMD_NONE;
             }
             break;
-
-        // === TRẠNG THÁI CHỜ OK ===
+        // === Waiting OK ===
         case STATE_WAIT_OK:
-            // 1. Kiểm tra xem có lệnh OK không
+            // 1. Check if OK ?
             if (g_command_flag == CMD_OK) {
-                g_communication_state = STATE_IDLE; // Quay về chờ [cite: 311]
+                g_communication_state = STATE_IDLE;
                 g_command_flag = CMD_NONE;
             }
-
-            // 2. Kiểm tra TIMEOUT (3 giây) [cite: 312]
+            // 2. Check TIMEOUT (3s)
             if (HAL_GetTick() - g_timer_start > TIMEOUT_DURATION) {
-                // Hết 3 giây, gửi lại gói tin CŨ [cite: 313]
-                sprintf(tx_buffer, "!ADC=%lu#", g_last_adc_value); // [cite: 310]
+                sprintf(tx_buffer, "!ADC=%lu#", g_last_adc_value);
                 HAL_UART_Transmit(&huart2, (uint8_t*)tx_buffer, strlen(tx_buffer), 200);
-
-                // Khởi động lại timer
                 g_timer_start = HAL_GetTick();
             }
             break;
